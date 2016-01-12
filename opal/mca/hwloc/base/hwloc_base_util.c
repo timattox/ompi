@@ -1021,6 +1021,61 @@ void opal_hwloc_base_clear_usage(hwloc_topology_t topo)
     }
 }
 
+static unsigned int df_sum_bound(hwloc_topology_t topo,
+                     hwloc_obj_t obj)
+{
+    unsigned int locSum=0;
+    unsigned k;
+    opal_hwloc_obj_data_t *data;
+
+    /* see how many procs are bound to us directly */
+    data = (opal_hwloc_obj_data_t*)obj->userdata;
+    if (NULL != data) {
+        locSum = data->num_bound;
+    }
+
+    /* see how many procs are bound to our children */
+    for (k=0; k < obj->arity; k++) {
+        locSum += df_sum_bound(topo, obj->children[k]);
+    }
+    return locSum;
+}
+
+/**
+ * Sum the number of bound processes at and under a given hwloc object.
+ */
+unsigned int opal_hwloc_base_sum_bound(hwloc_topology_t topo,
+                     hwloc_obj_t obj)
+{
+    unsigned int locSum=0;
+    unsigned k;
+
+    /* bozo check */
+    if (NULL == topo) {
+        OPAL_OUTPUT_VERBOSE((5, opal_hwloc_base_framework.framework_output,
+                             "hwloc:base:sum_usage: NULL topology"));
+        return 0;
+    }
+
+    /* see how many procs are bound to us directly
+     * but must not start at root as the root object has
+     * a different userdata attached to it
+     */
+    if (hwloc_get_root_obj(topo) != obj) {
+        opal_hwloc_obj_data_t *data = (opal_hwloc_obj_data_t*)obj->userdata;
+        if (NULL != data) {
+            locSum = data->num_bound;
+        }
+    }
+
+    /* see how many procs are bound to our children */
+    for (k=0; k < obj->arity; k++) {
+        locSum += df_sum_bound(topo, obj->children[k]);
+    }
+    return locSum;
+}
+
+
 /* The current slot_list notation only goes to the core level - i.e., the location
  * is specified as socket:core. Thus, the code below assumes that all locations
  * are to be parsed under that notation.

@@ -162,6 +162,11 @@ OPAL_DECLSPEC hwloc_obj_t opal_hwloc_base_find_min_bound_target_under_obj(hwloc_
                                                                           hwloc_obj_type_t target,
                                                                           unsigned cache_leve);
 OPAL_DECLSPEC void opal_hwloc_base_clear_usage(hwloc_topology_t topo);
+/**
+ * Sum the number of bound processes at and under a given hwloc object.
+ */
+OPAL_DECLSPEC unsigned int opal_hwloc_base_sum_bound(hwloc_topology_t topo,
+                                                     hwloc_obj_t obj);
 
 OPAL_DECLSPEC hwloc_obj_t opal_hwloc_base_get_obj_by_type(hwloc_topology_t topo,
                                                           hwloc_obj_type_t target,
