@@ -453,6 +453,11 @@ int orte_rmaps_rr_byobj(orte_job_t *jdata,
     int idx;
     hwloc_obj_t obj=NULL;
     unsigned int nobjs;
+    hwloc_obj_t *objsA=NULL;   /* array of objects being mapped to */
+    unsigned int *npusA=NULL;  /* array of npu counts, 1 per obj */
+    unsigned int *usageA=NULL; /* array of usage counts, 1 per obj */
+    unsigned int nobjsMax=0;   /* current length of the objsA, npusA, and usageA arrays */
+    int returnCode=ORTE_SUCCESS;
     bool add_one;
     bool second_pass;
 
@@ -500,10 +505,14 @@ int orte_rmaps_rr_byobj(orte_job_t *jdata,
     do {
         add_one = false;
         OPAL_LIST_FOREACH(node, node_list, orte_node_t) {
+            bool will_oversubscribe = false;
+            int objNdx;
+            unsigned int npusTot, usageTot;
             if (NULL == node->topology) {
                 orte_show_help("help-orte-rmaps-ppr.txt", "ppr-topo-missing",
                                true, node->name);
-                return ORTE_ERR_SILENT;
+                returnCode = ORTE_ERR_SILENT;
+                goto cleanup;
             }
             start = 0;
             /* get the number of objects of this type on this node */
@@ -514,6 +523,21 @@ int orte_rmaps_rr_byobj(orte_job_t *jdata,
             opal_output_verbose(2, orte_rmaps_base_framework.framework_output,
                                 "mca:rmaps:rr: found %u %s objects on node %s",
                                 nobjs, hwloc_obj_type_string(target), node->name);
+
+            /* malloc enough space to track the proposed mapping to the nobjs */
+            if (nobjs > nobjsMax) {
+                if (objsA) free(objsA);
+                if (npusA) free(npusA);
+                if (usageA) free(usageA);
+                objsA = (hwloc_obj_t *) malloc(sizeof(hwloc_obj_t) * nobjs);
+                npusA = (unsigned int *) malloc(sizeof(unsigned int) * nobjs);
+                usageA = (unsigned int *) malloc(sizeof(unsigned int) * nobjs);
+                if ((NULL == objsA) || (NULL == npusA) || (NULL == usageA)) {
+                    returnCode = ORTE_ERR_OUT_OF_RESOURCE;
+                    goto cleanup;
+                }
+                nobjsMax = nobjs;
+            }
 
             /* if this is a comm_spawn situation, start with the object
              * where the parent left off and increment */
@@ -542,38 +566,70 @@ int orte_rmaps_rr_byobj(orte_job_t *jdata,
             if (!ORTE_FLAG_TEST(node, ORTE_NODE_FLAG_MAPPED)) {
                 if (ORTE_SUCCESS > (idx = opal_pointer_array_add(jdata->map->nodes, (void*)node))) {
                     ORTE_ERROR_LOG(idx);
-                    return idx;
+                    returnCode = idx;
+                    goto cleanup;
                 }
                 ORTE_FLAG_SET(node, ORTE_NODE_FLAG_MAPPED);
                 OBJ_RETAIN(node);  /* maintain accounting on object */
                 ++(jdata->map->num_nodes);
             }
+
+            /* find how many slots are already bound within the nobjs on this node */
+            orte_rmaps_base_node_compute_usage(node, ORTE_JOBID_INVALID, second_pass);
+            npusTot = usageTot = 0;
+            for (i=0; i < (int)nobjs; i++) {
+                /* get the hwloc object */
+                if (NULL == (obj = opal_hwloc_base_get_obj_by_type(node->topology, target, cache_level, i, OPAL_HWLOC_AVAILABLE))) {
+                    ORTE_ERROR_LOG(ORTE_ERR_NOT_FOUND);
+                    returnCode = ORTE_ERR_NOT_FOUND;
+                    goto cleanup;
+                }
+                objsA[i] = obj;
+                npusTot += npusA[i] = opal_hwloc_base_get_npus(node->topology, obj);
+                usageTot += usageA[i] = opal_hwloc_base_sum_bound(node->topology, obj);
+                opal_output_verbose(20, orte_rmaps_base_framework.framework_output,
+                                    "mca:rmaps:rr: obj %d already has %d PUs used of %d",
+                                    i, usageA[i], npusA[i]);
+            }
+
+            opal_output_verbose(20, orte_rmaps_base_framework.framework_output,
+                                "mca:rmaps:rr: node %s already has %d PUs used of %d",
+                                node->name, usageTot, npusTot);
+            if (nprocs * orte_rmaps_base.cpus_per_rank + usageTot > npusTot) {
+                opal_output_verbose(2, orte_rmaps_base_framework.framework_output,
+                                    "mca:rmaps:rr: node %s will be oversubscribed!",
+                                    node->name);
+                will_oversubscribe = true;
+            }
+
+            /* map the procs to the objects */
             nmapped = 0;
             opal_output_verbose(2, orte_rmaps_base_framework.framework_output,
                                 "mca:rmaps:rr: assigning nprocs %d", nprocs);
+            i = 0;
             do {
-                /* loop through the number of objects */
-                for (i=0; i < (int)nobjs && nmapped < nprocs && nprocs_mapped < (int)app->num_procs; i++) {
+                /* check the next object */
+                objNdx = (i + start) % nobjs;
+                if (orte_rmaps_base.cpus_per_rank > (int)(npusA[objNdx])) {
+                    orte_show_help("help-orte-rmaps-base.txt", "mapping-too-low", true,
+                                   orte_rmaps_base.cpus_per_rank, npusA[objNdx],
+                                   orte_rmaps_base_print_mapping(orte_rmaps_base.mapping));
+                    returnCode = ORTE_ERR_SILENT;
+                    goto cleanup;
+                }
+                if (will_oversubscribe || (usageA[objNdx] < npusA[objNdx])) {
                     opal_output_verbose(20, orte_rmaps_base_framework.framework_output,
-                                        "mca:rmaps:rr: assigning proc to object %d", (i+start) % nobjs);
-                    /* get the hwloc object */
-                    if (NULL == (obj = opal_hwloc_base_get_obj_by_type(node->topology, target, cache_level, (i+start) % nobjs, OPAL_HWLOC_AVAILABLE))) {
-                        ORTE_ERROR_LOG(ORTE_ERR_NOT_FOUND);
-                        return ORTE_ERR_NOT_FOUND;
-                    }
-                    if (orte_rmaps_base.cpus_per_rank > (int)opal_hwloc_base_get_npus(node->topology, obj)) {
-                        orte_show_help("help-orte-rmaps-base.txt", "mapping-too-low", true,
-                                       orte_rmaps_base.cpus_per_rank, opal_hwloc_base_get_npus(node->topology, obj),
-                                       orte_rmaps_base_print_mapping(orte_rmaps_base.mapping));
-                        return ORTE_ERR_SILENT;
-                    }
+                                        "mca:rmaps:rr: assigning proc to object %d", objNdx);
                     if (NULL == (proc = orte_rmaps_base_setup_proc(jdata, node, app->idx))) {
-                        return ORTE_ERR_OUT_OF_RESOURCE;
+                        returnCode = ORTE_ERR_OUT_OF_RESOURCE;
+                        goto cleanup;
                     }
                     nprocs_mapped++;
                     nmapped++;
-                    orte_set_attribute(&proc->attributes, ORTE_PROC_HWLOC_LOCALE, ORTE_ATTR_LOCAL, obj, OPAL_PTR);
+                    usageA[objNdx] += orte_rmaps_base.cpus_per_rank;
+                    orte_set_attribute(&proc->attributes, ORTE_PROC_HWLOC_LOCALE, ORTE_ATTR_LOCAL, objsA[objNdx], OPAL_PTR);
                 }
+                i++;
             } while (nmapped < nprocs && nprocs_mapped < (int)app->num_procs);
             add_one = true;
             /* not all nodes are equal, so only set oversubscribed for
@@ -611,10 +667,16 @@ int orte_rmaps_rr_byobj(orte_job_t *jdata,
 
     if (nprocs_mapped < app->num_procs) {
         /* usually means there were no objects of the requested type */
-        return ORTE_ERR_NOT_FOUND;
+        returnCode = ORTE_ERR_NOT_FOUND;
+        goto cleanup;
     }
 
-    return ORTE_SUCCESS;
+cleanup:
+    if (objsA) free(objsA);
+    if (npusA) free(npusA);
+    if (usageA) free(usageA);
+
+    return returnCode;
 }
 
 static int byobj_span(orte_job_t *jdata,
