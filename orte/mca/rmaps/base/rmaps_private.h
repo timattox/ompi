@@ -61,6 +61,10 @@ ORTE_DECLSPEC int orte_rmaps_base_compute_vpids(orte_job_t *jdata,
 
 ORTE_DECLSPEC int orte_rmaps_base_compute_local_ranks(orte_job_t *jdata);
 
+ORTE_DECLSPEC void orte_rmaps_base_node_compute_usage(orte_node_t *node,
+                                                      orte_jobid_t ignore_this_jobid,
+                                                      bool include_mapped_too);
+
 ORTE_DECLSPEC int orte_rmaps_base_compute_bindings(orte_job_t *jdata);
 
 ORTE_DECLSPEC void orte_rmaps_base_update_local_ranks(orte_job_t *jdata, orte_node_t *oldnode,

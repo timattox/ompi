@@ -53,59 +53,6 @@
 
 static bool membind_warned=false;
 
-static void reset_usage(orte_node_t *node, orte_jobid_t jobid)
-{
-    int j;
-    orte_proc_t *proc;
-    opal_hwloc_obj_data_t *data=NULL;
-    hwloc_obj_t bound;
-
-    opal_output_verbose(10, orte_rmaps_base_framework.framework_output,
-                        "%s reset_usage: node %s has %d procs on it",
-                        ORTE_NAME_PRINT(ORTE_PROC_MY_NAME),
-                        node->name, node->num_procs);
-
-    /* start by clearing any existing info */
-    opal_hwloc_base_clear_usage(node->topology);
-
-    /* cycle thru the procs on the node and record
-     * their usage in the topology
-     */
-    for (j=0; j < node->procs->size; j++) {
-        if (NULL == (proc = (orte_proc_t*)opal_pointer_array_get_item(node->procs, j))) {
-            continue;
-        }
-        /* ignore procs from this job */
-        if (proc->name.jobid == jobid) {
-            opal_output_verbose(10, orte_rmaps_base_framework.framework_output,
-                                "%s reset_usage: ignoring proc %s",
-                                ORTE_NAME_PRINT(ORTE_PROC_MY_NAME),
-                                ORTE_NAME_PRINT(&proc->name));
-            continue;
-        }
-        bound = NULL;
-        if (!orte_get_attribute(&proc->attributes, ORTE_PROC_HWLOC_BOUND, (void**)&bound, OPAL_PTR) ||
-            NULL == bound) {
-            /* this proc isn't bound - ignore it */
-            opal_output_verbose(10, orte_rmaps_base_framework.framework_output,
-                                "%s reset_usage: proc %s has no bind location",
-                                ORTE_NAME_PRINT(ORTE_PROC_MY_NAME),
-                                ORTE_NAME_PRINT(&proc->name));
-            continue;
-        }
-        data = (opal_hwloc_obj_data_t*)bound->userdata;
-        if (NULL == data) {
-            data = OBJ_NEW(opal_hwloc_obj_data_t);
-            bound->userdata = data;
-        }
-        data->num_bound++;
-        opal_output_verbose(10, orte_rmaps_base_framework.framework_output,
-                            "%s reset_usage: proc %s is bound - total %d",
-                            ORTE_NAME_PRINT(ORTE_PROC_MY_NAME),
-                            ORTE_NAME_PRINT(&proc->name), data->num_bound);
-    }
-}
-
 static void unbind_procs(orte_job_t *jdata)
 {
     int j;
@@ -469,10 +416,10 @@ static int bind_in_place(orte_job_t *jdata,
         }
 
         /* we share topologies in order
-         * to save space, so we need to reset the usage info to reflect
-         * our own current state
+         * to save space, so we need to recompute the usage info to reflect
+         * our own current state of bound procs
          */
-        reset_usage(node, jdata->jobid);
+        orte_rmaps_base_node_compute_usage(node, jdata->jobid, false);
 
         /* cycle thru the procs */
         for (j=0; j < node->procs->size; j++) {
@@ -896,10 +843,10 @@ int orte_rmaps_base_compute_bindings(orte_job_t *jdata)
         }
 
         /* we share topologies in order
-         * to save space, so we need to reset the usage info to reflect
-         * our own current state
+         * to save space, so we need to recompute the usage info to reflect
+         * our own current state of bound procs
          */
-        reset_usage(node, jdata->jobid);
+        orte_rmaps_base_node_compute_usage(node, jdata->jobid, false);
 
         if (force_down) {
             if (ORTE_SUCCESS != (rc = bind_downwards(jdata, node, hwb, clvl))) {

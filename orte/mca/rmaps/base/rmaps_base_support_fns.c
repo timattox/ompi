@@ -700,3 +700,73 @@ orte_node_t* orte_rmaps_base_get_starting_point(opal_list_t *node_list,
 
     return (orte_node_t*)cur_node_item;
 }
+
+/* we share hwloc node topologies in order to save space,
+ * so we need to compute the usage info for the node to reflect
+ * our own current state, ignoring the procs from ignore_this_jobid
+ * If include_mapped_too is true, also count mapped but not yet bound procs.
+ */
+void orte_rmaps_base_node_compute_usage(orte_node_t *node,
+                                        orte_jobid_t ignore_this_jobid,
+                                        bool include_mapped_too)
+{
+    int j;
+    orte_proc_t *proc;
+    opal_hwloc_obj_data_t *data=NULL;
+    hwloc_obj_t usedObj;
+
+    opal_output_verbose(10, orte_rmaps_base_framework.framework_output,
+                        "%s node_compute_usage: node %s has %d procs on it",
+                        ORTE_NAME_PRINT(ORTE_PROC_MY_NAME),
+                        node->name, node->num_procs);
+
+    /* start by clearing any existing info */
+    opal_hwloc_base_clear_usage(node->topology);
+
+    /* cycle thru the procs on the node and record
+     * their usage in the topology
+     */
+    for (j=0; j < node->procs->size; j++) {
+        if (NULL == (proc = (orte_proc_t*)opal_pointer_array_get_item(node->procs, j))) {
+            continue;
+        }
+        /* ignore procs from ignore_this_jobid */
+        if (proc->name.jobid == ignore_this_jobid) {
+            opal_output_verbose(10, orte_rmaps_base_framework.framework_output,
+                                "%s node_compute_usage: ignoring proc %s",
+                                ORTE_NAME_PRINT(ORTE_PROC_MY_NAME),
+                                ORTE_NAME_PRINT(&proc->name));
+            continue;
+        }
+        usedObj = NULL;
+        if (!orte_get_attribute(&proc->attributes, ORTE_PROC_HWLOC_BOUND, (void**)&usedObj, OPAL_PTR) ||
+            NULL == usedObj) {
+            /* this proc isn't bound - do we ignore it? */
+            if (!include_mapped_too) {
+                opal_output_verbose(10, orte_rmaps_base_framework.framework_output,
+                                    "%s node_compute_usage: proc %s has no bind location",
+                                    ORTE_NAME_PRINT(ORTE_PROC_MY_NAME),
+                                    ORTE_NAME_PRINT(&proc->name));
+                continue;
+            } else if (!orte_get_attribute(&proc->attributes, ORTE_PROC_HWLOC_LOCALE, (void**)&usedObj, OPAL_PTR) ||
+                NULL == usedObj) {
+                opal_output_verbose(10, orte_rmaps_base_framework.framework_output,
+                                    "%s node_compute_usage: proc %s has no bind nor map location",
+                                    ORTE_NAME_PRINT(ORTE_PROC_MY_NAME),
+                                    ORTE_NAME_PRINT(&proc->name));
+                continue;
+            }
+        }
+        data = (opal_hwloc_obj_data_t*)usedObj->userdata;
+        if (NULL == data) {
+            data = OBJ_NEW(opal_hwloc_obj_data_t);
+            usedObj->userdata = data;
+        }
+        data->num_bound++;
+        opal_output_verbose(10, orte_rmaps_base_framework.framework_output,
+                            "%s node_compute_usage: proc %s is bound (or mapped) - total %d",
+                            ORTE_NAME_PRINT(ORTE_PROC_MY_NAME),
+                            ORTE_NAME_PRINT(&proc->name), data->num_bound);
+    }
+}
+
